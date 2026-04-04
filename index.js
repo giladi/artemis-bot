@@ -1,7 +1,13 @@
 const Parser = require('rss-parser');
 const fs = require('fs');
 
-const parser = new Parser();
+const parser = new Parser({
+  headers: {
+    'User-Agent': 'ArtemisTelegramBot/1.0 (+https://github.com/giladi/artemis-bot)',
+    'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+  },
+  timeout: 15000
+});
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
@@ -39,6 +45,38 @@ function saveSentItems(sentItems) {
   } catch (error) {
     console.error('Failed to save sent.json:', error.message);
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchFeedWithRetry() {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await parser.parseURL(FEED_URL);
+    } catch (error) {
+      const message = String(error.message || '');
+
+      if (message.includes('429')) {
+        console.warn(`NASA feed returned 429 on attempt ${attempt}/${maxAttempts}.`);
+
+        if (attempt < maxAttempts) {
+          await sleep(attempt * 5000);
+          continue;
+        }
+
+        console.warn('Skipping this run because NASA rate-limited the request.');
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  return null;
 }
 
 async function sendTelegramPhoto(photoUrl, caption) {
@@ -99,7 +137,12 @@ function looksLikeDirectImageUrl(url) {
 
 async function getImageFromArticle(articleUrl) {
   try {
-    const response = await fetch(articleUrl);
+    const response = await fetch(articleUrl, {
+      headers: {
+        'User-Agent': 'ArtemisTelegramBot/1.0 (+https://github.com/giladi/artemis-bot)'
+      }
+    });
+
     const html = await response.text();
 
     const ogImageMatch =
@@ -145,7 +188,12 @@ async function run() {
   console.log('Checking NASA RSS feed...');
 
   const sentItems = loadSentItems();
-  const feed = await parser.parseURL(FEED_URL);
+  const feed = await fetchFeedWithRetry();
+
+  if (!feed) {
+    console.log('No feed data available for this run.');
+    return;
+  }
 
   const relevantItems = (feed.items || []).filter(isRelevantItem);
 
