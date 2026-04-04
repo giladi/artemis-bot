@@ -9,7 +9,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "rss-parser": "^3.13.0",
-    "node-fetch": "^3.3.2"
+    "rss-parser": "^3.13.0"
   }
 }
