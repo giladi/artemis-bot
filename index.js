@@ -5,7 +5,7 @@ const CHAT_ID = process.env.CHAT_ID;
 
 const GALLERY_URL = 'https://www.nasa.gov/gallery/journey-to-the-moon/';
 const SENT_FILE = 'sent.json';
-const MAX_ITEMS_PER_RUN = 10;
+const MAX_ITEMS_PER_RUN = 20;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('Missing BOT_TOKEN or CHAT_ID environment variables.');
@@ -50,13 +50,19 @@ function decodeHtmlEntities(text) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
+    .replace(/&#x27;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .trim();
 }
 
 function stripHtml(html) {
-  return decodeHtmlEntities(String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+  return decodeHtmlEntities(
+    String(html || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 async function fetchText(url) {
@@ -135,6 +141,21 @@ function uniqueBy(items, keyFn) {
   return result;
 }
 
+function isValidImageDetailUrl(url) {
+  if (!url) return false;
+
+  if (!url.startsWith('https://www.nasa.gov/image-detail/')) {
+    return false;
+  }
+
+  const slug = url.replace('https://www.nasa.gov/image-detail/', '').replace(/\/+$/, '');
+
+  if (!slug) return false;
+  if (slug.length < 8) return false;
+
+  return /^[a-z0-9\-\/]+$/i.test(slug);
+}
+
 function extractImageDetailLinks(html) {
   const results = [];
 
@@ -149,7 +170,7 @@ function extractImageDetailLinks(html) {
     results.push(`https://www.nasa.gov${match[1]}`);
   }
 
-  return uniqueBy(results, (url) => url);
+  return uniqueBy(results, (url) => url).filter(isValidImageDetailUrl);
 }
 
 function extractMetaContent(html, propertyName) {
@@ -176,18 +197,19 @@ function extractHeading(html) {
 }
 
 function extractDescriptionParagraph(html) {
-  const lines = html.split('\n');
+  const paragraphMatches = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
+  for (const match of paragraphMatches) {
+    const text = stripHtml(match[1]);
 
-    if (/<h1[^>]*>/i.test(line) || /^#\s+/i.test(line.trim())) {
-      for (let j = i + 1; j < Math.min(i + 12, lines.length); j += 1) {
-        const candidate = stripHtml(lines[j]);
-        if (candidate && !candidate.startsWith('Image Credit') && !candidate.startsWith('Taken ')) {
-          return candidate;
-        }
-      }
+    if (
+      text &&
+      !text.startsWith('Image Credit') &&
+      !text.startsWith('Taken ') &&
+      !text.startsWith('Last Updated') &&
+      text.length > 20
+    ) {
+      return text;
     }
   }
 
@@ -195,8 +217,17 @@ function extractDescriptionParagraph(html) {
 }
 
 function extractDownloadUrl(html) {
-  const match = html.match(/href="(https:\/\/images-assets\.nasa\.gov\/[^"]+)"/i);
-  return match ? decodeHtmlEntities(match[1]) : '';
+  const directAssetMatch = html.match(/href="(https:\/\/images-assets\.nasa\.gov\/[^"]+)"/i);
+  if (directAssetMatch && directAssetMatch[1]) {
+    return decodeHtmlEntities(directAssetMatch[1]);
+  }
+
+  const buttonMatch = html.match(/Download[^]*?href="([^"]+)"/i);
+  if (buttonMatch && buttonMatch[1]) {
+    return decodeHtmlEntities(buttonMatch[1]);
+  }
+
+  return '';
 }
 
 function buildCaption(item) {
@@ -217,7 +248,7 @@ async function fetchGalleryItems() {
   const galleryHtml = await fetchText(GALLERY_URL);
   const detailUrls = extractImageDetailLinks(galleryHtml);
 
-  console.log(`Found ${detailUrls.length} image detail link(s) on the gallery page.`);
+  console.log(`Found ${detailUrls.length} valid image detail link(s) on the gallery page.`);
 
   return detailUrls.slice(0, MAX_ITEMS_PER_RUN);
 }
@@ -237,9 +268,9 @@ async function fetchImageDetails(pageUrl) {
 
     return {
       pageUrl,
-      title,
-      description,
-      imageUrl
+      title: decodeHtmlEntities(title),
+      description: decodeHtmlEntities(description),
+      imageUrl: decodeHtmlEntities(imageUrl)
     };
   } catch (error) {
     console.error(`Failed to fetch image details from ${pageUrl}:`, error.message);
