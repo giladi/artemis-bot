@@ -5,7 +5,7 @@ const CHAT_ID = process.env.CHAT_ID;
 
 const GALLERY_URL = 'https://www.nasa.gov/gallery/journey-to-the-moon/';
 const SENT_FILE = 'sent.json';
-const MAX_ITEMS_PER_RUN = 20;
+const MAX_ITEMS_PER_RUN = 6;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('Missing BOT_TOKEN or CHAT_ID environment variables.');
@@ -65,19 +65,36 @@ function stripHtml(html) {
   );
 }
 
-async function fetchText(url) {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'ArtemisTelegramBot/1.0 (+https://github.com/giladi/artemis-bot)',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    }
-  });
+async function fetchTextWithRetry(url, options = {}) {
+  const maxAttempts = 4;
 
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'ArtemisTelegramBot/1.0 (+https://github.com/giladi/artemis-bot)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        ...(options.headers || {})
+      }
+    });
+
+    if (response.ok) {
+      return response.text();
+    }
+
+    if (response.status === 429) {
+      const waitMs = attempt * 4000;
+      console.warn(`429 for ${url} on attempt ${attempt}/${maxAttempts}. Waiting ${waitMs}ms...`);
+
+      if (attempt < maxAttempts) {
+        await sleep(waitMs);
+        continue;
+      }
+    }
+
     throw new Error(`Request failed for ${url}: ${response.status}`);
   }
 
-  return response.text();
+  throw new Error(`Request failed for ${url}: exhausted retries`);
 }
 
 async function sendTelegramPhoto(photoUrl, caption) {
@@ -245,7 +262,7 @@ function buildCaption(item) {
 async function fetchGalleryItems() {
   console.log('Checking Journey to the Moon gallery...');
 
-  const galleryHtml = await fetchText(GALLERY_URL);
+  const galleryHtml = await fetchTextWithRetry(GALLERY_URL);
   const detailUrls = extractImageDetailLinks(galleryHtml);
 
   console.log(`Found ${detailUrls.length} valid image detail link(s) on the gallery page.`);
@@ -255,7 +272,7 @@ async function fetchGalleryItems() {
 
 async function fetchImageDetails(pageUrl) {
   try {
-    const html = await fetchText(pageUrl);
+    const html = await fetchTextWithRetry(pageUrl);
 
     const ogTitle = extractMetaContent(html, 'og:title');
     const ogDescription = extractMetaContent(html, 'og:description');
@@ -309,6 +326,8 @@ async function run() {
       continue;
     }
 
+    await sleep(3500);
+
     const item = await fetchImageDetails(pageUrl);
 
     if (!item) {
@@ -319,7 +338,7 @@ async function run() {
       await sendGalleryItem(item);
       sentItems.add(uniqueId);
       sentNow += 1;
-      await sleep(1200);
+      await sleep(2500);
     } catch (error) {
       console.error(`Failed to send gallery item "${pageUrl}":`, error.message);
     }
