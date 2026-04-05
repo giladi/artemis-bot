@@ -13,9 +13,9 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
 const FEED_URL = 'https://www.nasa.gov/rss/dyn/breaking_news.rss';
-const FLICKR_ALBUM_URL = 'https://www.flickr.com/photos/nasa2explore/albums/72177720307234654/';
+const MULTIMEDIA_URL = 'https://www.nasa.gov/artemis-ii-multimedia/';
 const SENT_FILE = 'sent.json';
-const MAX_FLICKR_IMAGES_PER_RUN = 4;
+const MAX_MEDIA_ITEMS_PER_RUN = 4;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('Missing BOT_TOKEN or CHAT_ID environment variables.');
@@ -232,195 +232,160 @@ function uniqueBy(items, keyFn) {
   return result;
 }
 
-function scoreFlickrTitle(title) {
-  const text = normalizeLower(title);
+function extractNasaMediaLinks(html) {
+  const results = [];
+
+  const absoluteRegex = /https:\/\/www\.nasa\.gov\/(?:image-article|gallery)\/[a-z0-9\-\/]+/gi;
+  const relativeRegex = /href="(\/(?:image-article|gallery)\/[^"]+)"/gi;
+
+  for (const match of html.matchAll(absoluteRegex)) {
+    results.push(match[0]);
+  }
+
+  for (const match of html.matchAll(relativeRegex)) {
+    results.push(`https://www.nasa.gov${match[1]}`);
+  }
+
+  return uniqueBy(results, (url) => url);
+}
+
+function scoreMediaPage(page) {
+  const title = normalizeLower(page.title);
+  const description = normalizeLower(page.description);
+  const url = normalizeLower(page.url);
+  const text = `${title} ${description} ${url}`;
+
   let score = 0;
 
-  if (text.includes('artemis ii')) score += 15;
+  if (text.includes('artemis ii')) score += 18;
   if (text.includes('artemis')) score += 8;
-  if (text.includes('orion')) score += 7;
-  if (text.includes('moon')) score += 6;
-  if (text.includes('earth')) score += 6;
+  if (text.includes('orion')) score += 8;
+  if (text.includes('moon')) score += 7;
+  if (text.includes('earth')) score += 7;
   if (text.includes('crew')) score += 5;
   if (text.includes('astronaut')) score += 5;
+  if (text.includes('flight day')) score += 5;
+  if (text.includes('journey')) score += 3;
+  if (text.includes('hello, world')) score += 10;
+  if (text.includes('thinking of you, earth')) score += 10;
+  if (text.includes('to the moon')) score += 8;
   if (text.includes('window')) score += 3;
-  if (text.includes('selfie')) score += 3;
-  if (text.includes('flight day')) score += 4;
-  if (text.includes('hello')) score += 2;
+  if (text.includes('imagery')) score += 3;
 
-  if (text.includes('flight director')) score -= 5;
-  if (text.includes('mission control')) score -= 4;
-  if (text.includes('console')) score -= 4;
-  if (text.includes('lead flight director')) score -= 4;
-  if (text.includes('launch pad')) score -= 3;
+  if (text.includes('podcast')) score -= 10;
+  if (text.includes('audio')) score -= 10;
+  if (text.includes('video')) score -= 4;
+  if (text.includes('virtual background')) score -= 12;
+  if (text.includes('wallpaper')) score -= 8;
 
   return score;
 }
 
-function parseFlickrAlbumEntries(html) {
-  const lines = html.split('\n');
-  const entries = [];
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const match = line.match(/【(\d+)†([^】]*)】/);
-
-    if (!match) {
-      continue;
-    }
-
-    const linkText = decodeHtmlEntities(match[2] || '').trim();
-
-    if (!linkText || linkText === 'Image') {
-      continue;
-    }
-
-    const nextLine = lines[i + 1] || '';
-    const imageMarker = nextLine.includes('Image†www.flickr.com') || line.includes('Image†www.flickr.com');
-
-    if (!imageMarker && !(lines[i - 1] || '').includes('Image†www.flickr.com')) {
-      continue;
-    }
-
-    entries.push({
-      title: linkText,
-      flickrPageUrl: `https://www.flickr.com/photos/nasa2explore/`,
-      albumUrl: FLICKR_ALBUM_URL
-    });
-  }
-
-  return uniqueBy(entries, (entry) => entry.title);
-}
-
-async function fetchFlickrPhotoSearchPage(title) {
-  const query = encodeURIComponent(`site:flickr.com/photos/nasa2explore "${title}"`);
-  const url = `https://r.jina.ai/http://r.jina.ai/http://www.google.com/search?q=${query}`;
-
+async function fetchMediaPageDetails(url) {
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'ArtemisTelegramBot/1.0 (+https://github.com/giladi/artemis-bot)'
-      }
-    });
+    const html = await fetchText(url);
 
-    if (!response.ok) {
+    const ogTitleMatch =
+      html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i) ||
+      html.match(/<meta\s+content="([^"]+)"\s+property="og:title"/i);
+
+    const ogImageMatch =
+      html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
+      html.match(/<meta\s+content="([^"]+)"\s+property="og:image"/i);
+
+    const ogDescriptionMatch =
+      html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/i) ||
+      html.match(/<meta\s+content="([^"]+)"\s+property="og:description"/i);
+
+    const publishedMatch =
+      html.match(/<meta\s+property="article:published_time"\s+content="([^"]+)"/i) ||
+      html.match(/<meta\s+content="([^"]+)"\s+property="article:published_time"/i);
+
+    const title = ogTitleMatch ? decodeHtmlEntities(ogTitleMatch[1]) : '';
+    const imageUrl = ogImageMatch ? decodeHtmlEntities(ogImageMatch[1]) : '';
+    const description = ogDescriptionMatch ? decodeHtmlEntities(ogDescriptionMatch[1]) : '';
+    const publishedTime = publishedMatch ? decodeHtmlEntities(publishedMatch[1]) : '';
+
+    if (!imageUrl || !looksLikeDirectImageUrl(imageUrl)) {
       return null;
     }
 
-    return response.text();
-  } catch {
-    return null;
-  }
-}
-
-async function getFlickrPhotoDetails(title) {
-  const searchHtml = await fetchFlickrPhotoSearchPage(title);
-
-  if (!searchHtml) {
-    return null;
-  }
-
-  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const titleRegex = new RegExp(`https:\\/\\/www\\.flickr\\.com\\/photos\\/nasa2explore\\/[^\\s\\]]+.*${escapedTitle}`, 'i');
-  const urlMatch = searchHtml.match(titleRegex);
-
-  let photoPageUrl = null;
-
-  if (urlMatch && urlMatch[0]) {
-    const raw = urlMatch[0];
-    const urlOnly = raw.match(/https:\/\/www\.flickr\.com\/photos\/nasa2explore\/[^\s\]]+/i);
-    if (urlOnly && urlOnly[0]) {
-      photoPageUrl = urlOnly[0].replace(/[),.;]+$/, '');
-    }
-  }
-
-  if (!photoPageUrl) {
-    return null;
-  }
-
-  try {
-    const photoHtml = await fetchText(photoPageUrl);
-
-    const ogImageMatch =
-      photoHtml.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) ||
-      photoHtml.match(/<meta\s+content="([^"]+)"\s+property="og:image"/i);
-
-    const ogTitleMatch =
-      photoHtml.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i) ||
-      photoHtml.match(/<meta\s+content="([^"]+)"\s+property="og:title"/i);
-
-    const imageUrl = ogImageMatch ? decodeHtmlEntities(ogImageMatch[1]) : null;
-    const resolvedTitle = ogTitleMatch ? decodeHtmlEntities(ogTitleMatch[1]) : title;
-
-    return {
-      title: resolvedTitle || title,
-      photoPageUrl,
-      imageUrl
+    const page = {
+      url,
+      title,
+      imageUrl,
+      description,
+      publishedTime
     };
+
+    page.score = scoreMediaPage(page);
+    return page;
   } catch (error) {
-    console.error(`Failed to fetch Flickr photo details for "${title}":`, error.message);
+    console.error(`Failed to fetch NASA media page "${url}":`, error.message);
     return null;
   }
 }
 
-async function fetchTopFlickrImages() {
-  console.log('Checking official Artemis II Flickr album...');
-
-  let albumHtml;
-  try {
-    albumHtml = await fetchText(FLICKR_ALBUM_URL);
-  } catch (error) {
-    console.error('Failed to fetch Flickr album page:', error.message);
-    return [];
-  }
-
-  const albumEntries = parseFlickrAlbumEntries(albumHtml);
-
-  if (albumEntries.length === 0) {
-    console.log('No Flickr album entries found.');
-    return [];
-  }
-
-  const sortedCandidates = [...albumEntries].sort((a, b) => scoreFlickrTitle(b.title) - scoreFlickrTitle(a.title));
-  const topCandidates = sortedCandidates.slice(0, 12);
-
-  const results = [];
-
-  for (const candidate of topCandidates) {
-    const details = await getFlickrPhotoDetails(candidate.title);
-
-    if (details && details.imageUrl && looksLikeDirectImageUrl(details.imageUrl)) {
-      results.push({
-        title: details.title,
-        photoPageUrl: details.photoPageUrl,
-        imageUrl: details.imageUrl,
-        score: scoreFlickrTitle(details.title)
-      });
+function sortMediaPages(items) {
+  return [...items].sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
     }
 
-    await sleep(1200);
-  }
+    const aTime = Date.parse(a.publishedTime || '') || 0;
+    const bTime = Date.parse(b.publishedTime || '') || 0;
 
-  const deduped = uniqueBy(results, (item) => item.photoPageUrl);
-
-  deduped.sort((a, b) => b.score - a.score);
-
-  return deduped.slice(0, MAX_FLICKR_IMAGES_PER_RUN);
+    return bTime - aTime;
+  });
 }
 
-async function sendFlickrImage(item) {
-  const caption = `📸 ${item.title}\n\n${item.photoPageUrl}`;
+async function fetchTopNasaMultimediaItems() {
+  console.log('Checking NASA Artemis II multimedia page...');
+
+  let multimediaHtml;
+  try {
+    multimediaHtml = await fetchText(MULTIMEDIA_URL);
+  } catch (error) {
+    console.error('Failed to fetch multimedia page:', error.message);
+    return [];
+  }
+
+  const candidateUrls = extractNasaMediaLinks(multimediaHtml);
+
+  if (candidateUrls.length === 0) {
+    console.log('No NASA multimedia links found.');
+    return [];
+  }
+
+  const limitedCandidates = candidateUrls.slice(0, 20);
+  const pages = [];
+
+  for (const url of limitedCandidates) {
+    const details = await fetchMediaPageDetails(url);
+
+    if (details && details.score >= 10) {
+      pages.push(details);
+    }
+
+    await sleep(700);
+  }
+
+  return sortMediaPages(uniqueBy(pages, (item) => item.url)).slice(0, MAX_MEDIA_ITEMS_PER_RUN);
+}
+
+async function sendMediaItem(item) {
+  const caption = `📸 ${item.title}\n\n${item.url}`;
 
   try {
     await sendTelegramPhoto(item.imageUrl, caption);
-    console.log(`Sent Flickr image: ${item.title}`);
+    console.log(`Sent NASA multimedia image: ${item.title}`);
     return;
   } catch (error) {
-    console.error(`Flickr photo send failed for "${item.title}", falling back to text:`, error.message);
+    console.error(`NASA multimedia photo send failed for "${item.title}", falling back to text:`, error.message);
   }
 
   await sendTelegramMessage(caption);
-  console.log(`Sent Flickr text update: ${item.title}`);
+  console.log(`Sent NASA multimedia text update: ${item.title}`);
 }
 
 async function processRss(sentItems) {
@@ -469,24 +434,24 @@ async function processRss(sentItems) {
   return sentNow;
 }
 
-async function processFlickr(sentItems) {
-  const images = await fetchTopFlickrImages();
+async function processNasaMultimedia(sentItems) {
+  const items = await fetchTopNasaMultimediaItems();
   let sentNow = 0;
 
-  for (const item of images) {
-    const uniqueId = `flickr:${item.photoPageUrl}`;
+  for (const item of items) {
+    const uniqueId = `media:${item.url}`;
 
     if (!uniqueId || sentItems.has(uniqueId)) {
       continue;
     }
 
     try {
-      await sendFlickrImage(item);
+      await sendMediaItem(item);
       sentItems.add(uniqueId);
       sentNow += 1;
       await sleep(1200);
     } catch (error) {
-      console.error(`Failed to send Flickr item "${item.title}":`, error.message);
+      console.error(`Failed to send NASA multimedia item "${item.title}":`, error.message);
     }
   }
 
@@ -497,7 +462,7 @@ async function run() {
   const sentItems = loadSentItems();
 
   let rssCount = 0;
-  let flickrCount = 0;
+  let mediaCount = 0;
 
   try {
     rssCount = await processRss(sentItems);
@@ -506,13 +471,13 @@ async function run() {
   }
 
   try {
-    flickrCount = await processFlickr(sentItems);
+    mediaCount = await processNasaMultimedia(sentItems);
   } catch (error) {
-    console.error('Flickr processing error:', error.message);
+    console.error('NASA multimedia processing error:', error.message);
   }
 
   saveSentItems(sentItems);
-  console.log(`Done. Sent ${rssCount} RSS update(s) and ${flickrCount} Flickr image update(s).`);
+  console.log(`Done. Sent ${rssCount} RSS update(s) and ${mediaCount} NASA multimedia image update(s).`);
 }
 
 run().catch((error) => {
