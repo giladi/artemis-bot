@@ -11,5 +11,9 @@
   "rss:https://www.nasa.gov/?post_type=press-release&p=980592",
   "rss:https://www.nasa.gov/?post_type=image-article&p=980637",
   "rss:https://science.nasa.gov/missions/artemis/meet-nasas-new-artemis-ii-science-officers/",
-  "rss:https://www.nasa.gov/?p=981041"
+  "rss:https://www.nasa.gov/?p=981041",
+  "media:https://www.nasa.gov/gallery/journey-to-the-moon/",
+  "media:https://www.nasa.gov/gallery/artemis-ii-mission-science/",
+  "media:https://www.nasa.gov/gallery/artemis-ii-launch/",
+  "media:https://www.nasa.gov/gallery/artemis-ii-astronauts/"
 ]
